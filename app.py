@@ -2,7 +2,7 @@
 """
 LINE 行事曆機器人
 - 新增事件（時間、地點、邀請對象）
-- 總攬查看
+- 總覽查看
 - 到點提醒
 """
 import os
@@ -34,9 +34,9 @@ HELP_TEXT = """📅 行事曆指令：
 
 例：新增 2025-03-15 14:00 16:00 團隊會議 地點:會議室A 邀請:小明,小華
 
-【總攬】
-輸入：總攬 或 行事曆
-可加日期：總攬 2025-03-15 或 總攬 2025-03-15 2025-03-20
+【總覽】
+輸入：總覽 或 行事曆
+可加日期：總覽 2025-03-15 或 總覽 2025-03-15 2025-03-20
 
 【刪除】
 輸入：刪除 事件編號
@@ -81,7 +81,7 @@ def format_event(e: dict) -> str:
 def get_main_quick_reply():
     return QuickReply(
         items=[
-            QuickReplyButton(action=MessageAction(label="📅 總攬", text="總攬")),
+            QuickReplyButton(action=MessageAction(label="📅 總覽", text="總覽")),
             QuickReplyButton(action=MessageAction(label="➕ 新增事件", text="新增")),
             QuickReplyButton(action=MessageAction(label="❓ 說明", text="說明")),
         ]
@@ -115,9 +115,9 @@ def try_add_event(user_id: str, text: str) -> str:
     eid = database.add_event(user_id, title, start_str, end_str, location, participants)
     return f"✅ 已新增事件 #{eid}\n{title}\n{start_str} ~ {end_str}" + (f"\n📍 {location}" if location else "") + (f"\n👥 邀請: {participants}" if participants else "")
 
-# ---------- 總攬 ----------
+# ---------- 總覽 ----------
 def do_overview(user_id: str, text: str) -> str:
-    """總攬 [開始日期] [結束日期]"""
+    """總覽 [開始日期] [結束日期]"""
     parts = text.split()
     from_date = None
     to_date = None
@@ -138,7 +138,7 @@ def do_overview(user_id: str, text: str) -> str:
     if not events:
         range_hint = f"（{from_date or '全部'} ~ {to_date or '全部'}）" if from_date else ""
         return f"📅 目前沒有排程事件{range_hint}。\n輸入「新增」開頭可新增事件。"
-    lines = ["📅 行事曆總攬\n"]
+    lines = ["📅 行事曆總覽\n"]
     for e in events:
         lines.append(format_event(e))
     return "\n".join(lines)
@@ -174,9 +174,9 @@ def handle_message(event):
         reply = TextSendMessage(text=HELP_TEXT, quick_reply=get_main_quick_reply())
     elif text == "說明" or text == "幫助" or text == "help":
         reply = TextSendMessage(text=HELP_TEXT, quick_reply=get_main_quick_reply())
-    elif text == "總攬" or text == "行事曆":
-        reply = TextSendMessage(text=do_overview(user_id, "總攬"), quick_reply=get_main_quick_reply())
-    elif text.startswith("總攬 "):
+    elif text == "總覽" or text == "行事曆":
+        reply = TextSendMessage(text=do_overview(user_id, "總覽"), quick_reply=get_main_quick_reply())
+    elif text.startswith("總覽 "):
         reply = TextSendMessage(text=do_overview(user_id, text), quick_reply=get_main_quick_reply())
     elif text == "新增":
         reply = TextSendMessage(
@@ -214,17 +214,29 @@ def send_reminders():
             except Exception:
                 pass
 
-# ---------- 啟動時初始化 DB 與排程（本機 python app.py 或 Render gunicorn 都會執行）----------
+# ---------- 啟動時初始化 DB 與排程 -----------
 def start_scheduler():
     from apscheduler.schedulers.background import BackgroundScheduler
     scheduler = BackgroundScheduler()
     scheduler.add_job(send_reminders, "interval", minutes=5)
     scheduler.start()
 
-# 匯入時就初始化，讓 gunicorn 啟動時也會建 DB、跑排程
-database.init_db()
-start_scheduler()
-
+# 第一次收到請求時才 init（避免 gunicorn 在 bind port 前跑其他東西，造成 Render 上 port 衝突）
+_init_done = False
+@app.before_request
+def _ensure_init():
+    global _init_done
+    if not _init_done:
+        database.init_db()
+        start_scheduler()
+        _init_done = True
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    # 在 Render 上這塊不會執行，所以不用擔心
+    app.run()
+
+# 確保這兩行在 app.run 之外且不會卡死
+try:
+    database.init_db()
+    start_scheduler()
+except Exception as e:
+    print(f"Init error: {e}")
