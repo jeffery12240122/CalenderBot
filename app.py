@@ -157,29 +157,29 @@ def send_step_month(reply_token):
     line_bot_api.reply_message(reply_token, TextSendMessage(text="📅 請先選擇月份", quick_reply=QuickReply(items=items)))
 
 def send_calendar_for_month(reply_token, year: int, month: int):
-    """步驟二：展開該月日曆 Flex，點選日期。一 二 三 四 五 六 日"""
-    weeks = cal_module.monthcalendar(year, month)
-    # 表頭
-    header = BoxComponent(layout="horizontal", contents=[
-        BoxComponent(layout="vertical", flex=1, contents=[TextComponent(text=d, size="xxs", align="center")]) for d in ["一","二","三","四","五","六","日"]
-    ])
-    body_contents = [header]
-    for week in weeks:
-        row = []
-        for d in week:
-            if d == 0:
-                row.append(BoxComponent(layout="vertical", flex=1, contents=[TextComponent(text=" ", size="xxs")]))
-            else:
-                row.append(ButtonComponent(
-                    style="link", flex=1, height="sm",
-                    action=PostbackAction(label=str(d), data=f"add_date_{year}-{month:02d}-{d:02d}")
-                ))
-        body_contents.append(BoxComponent(layout="horizontal", contents=row))
-    bubble = BubbleContainer(
-        header=BoxComponent(layout="vertical", contents=[TextComponent(text=f"{year}年{month}月", weight="bold", size="md", align="center")]),
-        body=BoxComponent(layout="vertical", contents=body_contents)
+    """步驟二：該月日期用「區間 → 日」兩段選，避免日曆格過小數字被遮擋。"""
+    _, ndays = cal_module.monthrange(year, month)
+    # 先選區間：1-10、11-20、21-31（依該月天數）
+    if ndays <= 10:
+        ranges = [("1-" + str(ndays) + "日", list(range(1, ndays + 1)))]
+    else:
+        ranges = [
+            ("1-10日", list(range(1, 11))),
+            ("11-20日", list(range(11, min(21, ndays + 1)))),
+        ]
+        if ndays >= 21:
+            ranges.append(("21-" + str(ndays) + "日", list(range(21, ndays + 1))))
+    items = []
+    for label, days in ranges:
+        if days:
+            # 每個區間用一個 postback，帶第一天的日期，之後再送「選日」清單
+            items.append(QuickReplyButton(
+                action=PostbackAction(label=label, data=f"add_daterange_{year}-{month:02d}_{days[0]}_{days[-1]}")
+            ))
+    line_bot_api.reply_message(
+        reply_token,
+        TextSendMessage(text=f"📅 {year}年{month}月 請選擇日期區間", quick_reply=QuickReply(items=items))
     )
-    line_bot_api.reply_message(reply_token, FlexSendMessage(alt_text=f"{year}年{month}月 日曆", contents=bubble))
 
 def send_step_start(reply_token, date_str):
     items = [QuickReplyButton(action=PostbackAction(label=t, data=f"add_start_{t}")) for t in _time_options()]
@@ -610,6 +610,19 @@ def handle_postback(event):
         except (ValueError, IndexError):
             line_bot_api.reply_message(reply_token, TextSendMessage(text="請重新選擇月份。", quick_reply=get_main_quick_reply()))
         return
+    if data.startswith("add_daterange_"):
+        # add_daterange_2025-03_1_10 -> 顯示 1~10 日的按鈕
+        rest = data.replace("add_daterange_", "")
+        try:
+            parts_re = rest.split("_")
+            ym = parts_re[0]
+            s, e = int(parts_re[1]), int(parts_re[2])
+            y, m = int(ym[:4]), int(ym[5:7])
+            items = [QuickReplyButton(action=PostbackAction(label=str(d), data=f"add_date_{y}-{m:02d}-{d:02d}")) for d in range(s, e + 1)]
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"📅 請選擇日期（{y}年{m}月）", quick_reply=QuickReply(items=items)))
+        except (ValueError, IndexError):
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="請重新選擇月份。", quick_reply=get_main_quick_reply()))
+        return
     if data.startswith("add_date_"):
         date_val = data.replace("add_date_", "")
         user_states[user_id] = {"state": "add_start", "data": {"date": date_val}}
@@ -732,6 +745,11 @@ def handle_postback(event):
         else:
             line_bot_api.reply_message(reply_token, TextSendMessage(text=f"無法刪除事件 #{eid}", quick_reply=get_main_quick_reply()))
         return
+    if data.startswith("edit_"):
+        parts = data.split("_")
+        if len(parts) == 2 and parts[1].isdigit():
+            send_edit_choice(reply_token, int(parts[1]))
+            return
     if data.startswith("edit_") and data.count("_") == 2:
         # edit_3_title, edit_3_location, edit_3_time, edit_3_category, edit_3_reminder
         parts = data.split("_")
