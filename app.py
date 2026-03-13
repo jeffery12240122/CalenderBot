@@ -133,21 +133,53 @@ def get_main_menu_flex():
         )
     )
 
-# ---------- 新增流程：按鈕步驟（僅地點需打字）----------
-def _quick_dates():
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    return [
-        ("今天", today.strftime("%Y-%m-%d")),
-        ("明天", (today + timedelta(days=1)).strftime("%Y-%m-%d")),
-        ("後天", (today + timedelta(days=2)).strftime("%Y-%m-%d")),
-    ] + [(f"下週{['一','二','三','四','五','六','日'][i]}", (today + timedelta(days=7 - today.weekday() + i)).strftime("%Y-%m-%d")) for i in range(7)]
+# ---------- 新增流程：先選月份再展開日曆選日期 ----------
+import calendar as cal_module
+
+def _next_12_months():
+    """產生從本月起 12 個月的 (顯示文字, YYYY-MM)"""
+    today = datetime.now()
+    y, m = today.year, today.month
+    out = []
+    for i in range(12):
+        mm = m + i
+        yy = y + (mm - 1) // 12
+        mm = (mm - 1) % 12 + 1
+        out.append((f"{yy}年{mm}月", f"{yy}-{mm:02d}"))
+    return out
 
 def _time_options():
     return [f"{h:02d}:00" for h in range(8, 21)]
 
-def send_step_date(reply_token):
-    items = [QuickReplyButton(action=PostbackAction(label=label, data=f"add_date_{val}")) for label, val in _quick_dates()]
-    line_bot_api.reply_message(reply_token, TextSendMessage(text="📅 請選擇日期", quick_reply=QuickReply(items=items)))
+def send_step_month(reply_token):
+    """步驟一：選擇月份（接下來 12 個月）"""
+    items = [QuickReplyButton(action=PostbackAction(label=label, data=f"add_month_{val}")) for label, val in _next_12_months()]
+    line_bot_api.reply_message(reply_token, TextSendMessage(text="📅 請先選擇月份", quick_reply=QuickReply(items=items)))
+
+def send_calendar_for_month(reply_token, year: int, month: int):
+    """步驟二：展開該月日曆 Flex，點選日期。一 二 三 四 五 六 日"""
+    weeks = cal_module.monthcalendar(year, month)
+    # 表頭
+    header = BoxComponent(layout="horizontal", contents=[
+        BoxComponent(layout="vertical", flex=1, contents=[TextComponent(text=d, size="xxs", align="center")]) for d in ["一","二","三","四","五","六","日"]
+    ])
+    body_contents = [header]
+    for week in weeks:
+        row = []
+        for d in week:
+            if d == 0:
+                row.append(BoxComponent(layout="vertical", flex=1, contents=[TextComponent(text=" ", size="xxs")]))
+            else:
+                row.append(ButtonComponent(
+                    style="link", flex=1, height="sm",
+                    action=PostbackAction(label=str(d), data=f"add_date_{year}-{month:02d}-{d:02d}")
+                ))
+        body_contents.append(BoxComponent(layout="horizontal", contents=row))
+    bubble = BubbleContainer(
+        header=BoxComponent(layout="vertical", contents=[TextComponent(text=f"{year}年{month}月", weight="bold", size="md", align="center")]),
+        body=BoxComponent(layout="vertical", contents=body_contents)
+    )
+    line_bot_api.reply_message(reply_token, FlexSendMessage(alt_text=f"{year}年{month}月 日曆", contents=bubble))
 
 def send_step_start(reply_token, date_str):
     items = [QuickReplyButton(action=PostbackAction(label=t, data=f"add_start_{t}")) for t in _time_options()]
@@ -516,7 +548,7 @@ def handle_message(event):
         return
     if text == "新增":
         user_states[user_id] = {"state": "add_date", "data": {}}
-        send_step_date(reply_token)
+        send_step_month(reply_token)
         return
     # 其餘一律導回主選單（引導用按鈕）
     line_bot_api.reply_message(reply_token, TextSendMessage(
@@ -536,7 +568,7 @@ def handle_postback(event):
         return
     if data == "menu_add":
         user_states[user_id] = {"state": "add_date", "data": {}}
-        send_step_date(reply_token)
+        send_step_month(reply_token)
         return
     if data == "menu_help":
         line_bot_api.reply_message(reply_token, TextSendMessage(text=HELP_TEXT, quick_reply=get_main_quick_reply()))
@@ -569,7 +601,15 @@ def handle_postback(event):
         line_bot_api.reply_message(reply_token, msg)
         return
 
-    # ---------- 新增流程（按鈕步驟）----------
+    # ---------- 新增流程：選月份 → 日曆選日 ----------
+    if data.startswith("add_month_"):
+        ym = data.replace("add_month_", "")
+        try:
+            y, m = int(ym[:4]), int(ym[5:7])
+            send_calendar_for_month(reply_token, y, m)
+        except (ValueError, IndexError):
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="請重新選擇月份。", quick_reply=get_main_quick_reply()))
+        return
     if data.startswith("add_date_"):
         date_val = data.replace("add_date_", "")
         user_states[user_id] = {"state": "add_start", "data": {"date": date_val}}
